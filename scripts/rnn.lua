@@ -7,12 +7,22 @@ local class = require 'class'
 
 RNN = class.new('RNN')
 
+
 function RNN:__init(params)
 	self.n_questions = params['n_questions']
 	self.n_hidden = params['n_hidden']
-	self.max_grad = params['max_grad']
 	self.use_dropout = params['dropout']
-	self.max_steps = params['max_steps']
+	self.max_grad = params['maxGrad']
+	self.dropoutPred = params['dropoutPred']
+	self.max_steps = params['maxSteps']
+
+	self.n_input = self.n_questions * 2
+	self.compressedSensing = params['compressedSensing']
+	if(self.compressedSensing) then
+		self.n_input = params['compressedDim']
+		torch.manualSeed(12345)
+		self.basis = torch.randn(self.n_questions * 2, self.n_input)
+	end
 	if(params['modelDir'] ~= nil) then
 		self:load(params['modelDir'])
 	else
@@ -23,10 +33,8 @@ end
 
 function RNN:build(params)
 
+	-- The transfer parameters
 	local transfer = nn.Linear(self.n_hidden, self.n_hidden)
-
-	local n_input = self.n_questions * 2
-	local n_output = self.n_questions
 
 	-- The first layer 
 	local start = nn.Linear(1, self.n_hidden)
@@ -38,12 +46,12 @@ function RNN:build(params)
 	local truth  = nn.Identity()(); -- whether the next question is correct
 
 	local linM   = transfer:clone('weight', 'bias')(inputM);
-	local linX   = nn.Linear(n_input, self.n_hidden)(inputX);
+	local linX   = nn.Linear(self.n_input, self.n_hidden)(inputX);
 	local madd   = nn.CAddTable()({linM, linX});
 	local hidden = nn.Tanh()(madd);
 	
 	local predInput = nil
-	if(self.use_dropout) then
+	if(self.dropoutPred) then
 		predInput = nn.Dropout()(hidden)
 	else
 		predInput = hidden
@@ -58,7 +66,6 @@ function RNN:build(params)
 	linY:annotate{name='linY'}
 	linM:annotate{name='linM'}
 
-	--pred_output_z.data.module.bias  = torch.ones(self.n_questions)
 	local layer         = nn.gModule({inputM, inputX, inputY, truth}, {pred, err, hidden});
 
 	self.start = start;
@@ -74,19 +81,13 @@ function RNN:rollOutNetwork()
 	end
 end
 
-function RNN:zeroGrad()
+function RNN:zeroGrad(n_steps)
 	self.start:zeroGradParameters()
-	for i = 1,self.max_steps do
-		self.layers[i]:zeroGradParameters()
-	end
 	self.layer:zeroGradParameters()
 end
 
-function RNN:update(rate)
+function RNN:update(n_steps, rate)
 	self.start:updateParameters(rate)
-	for i = 1,self.max_steps do
-		self.layers[i]:updateParameters(rate)
-	end
 	self.layer:updateParameters(rate)
 end
 
@@ -125,7 +126,6 @@ function RNN:load(dir)
 end
 
 function RNN:calcGrad(batch, rate, alpha)
-	--print('alpha', alpha)
 	local n_steps = getNSteps(batch)
 	local n_students = #batch
 	if(n_steps > self.max_steps) then
@@ -133,15 +133,11 @@ function RNN:calcGrad(batch, rate, alpha)
 	end
 	assert(n_steps <= self.max_steps)
 
-
 	local maxNorm = 0
-
 	local sumErr, numTests, inputs = self:fprop(batch)
 
 	local parentGrad = torch.zeros(n_students, self.n_hidden)
 	for k = n_steps,1,-1 do
-		--print('grad', k)
-		--local mask = self:getMask(batch, k)
 		local layerGrad = self.layers[k]:backward(inputs[k], {
 			torch.zeros(n_students),
 			torch.ones(n_students):mul(alpha),
@@ -151,9 +147,6 @@ function RNN:calcGrad(batch, rate, alpha)
 		
 	end
 	self.start:backward(torch.zeros(n_students, 1), parentGrad)
-
-	--self:testGrad(batch)
-	
 	return sumErr, numTests, maxNorm;
 end
 
@@ -187,6 +180,10 @@ function RNN:getInputs(batch, k)
 			truth[i] = nextCorrect
 			inputY[i][nextId] = 1
 		end
+	end
+	--compressed sensing
+	if(self.compressedSensing) then
+		inputX = inputX * self.basis
 	end
 	return inputX, inputY, truth
 end
@@ -228,43 +225,6 @@ function RNN:err(batch)
 end
 
 function RNN:accuracy(batch)
-	local n_steps = getNSteps(batch)
-	local n_students = #batch
-
-	-- for dropout
-	for i = 1,n_steps do
-		self.layers[i]:evaluate()
-	end
-
-	local sumCorrect = 0
-	local numTested = 0
-
-	local state = self.start:forward(torch.zeros(n_students, 1))
-	for k = 1,n_steps do
-		local inputX, inputY, truth = self:getInputs(batch, k)
-		inputX = inputX
-		inputY = inputY
-		local inputs = {state, inputX, inputY, truth};
-		local output = self.layers[k]:forward(inputs);
-		state = output[3]
-		
-		local mask = self:getMask(batch, k)
-		local p = output[1]:double()
-		local pred = torch.gt(p, 0.5):double()
-		local correct = torch.eq(pred, truth):double()
-		local numCorrect = correct:cmul(mask):sum()
-		sumCorrect = sumCorrect + numCorrect
-		numTested = numTested + mask:sum()
-	end
-
-	-- for dropout
-	for i = 1,n_steps do
-		self.layers[i]:training()
-	end
-	return sumCorrect, numTested
-end
-
-function RNN:accuracyLight(batch)
 	local n_steps = getNSteps(batch)
 	local n_students = #batch
 
@@ -333,43 +293,4 @@ function RNN:getPredictionTruth(batch)
 	-- for dropout
 	self.layer:training()
 	return predictionTruths
-end
-
-function RNN:testGrad(batch) 
-	local n_steps = getNSteps(batch)
-	for i = n_steps,1,-1 do
-		local params, grad = self.layers[i]:getParameters()
-		self:testGradParams(batch, params, grad, 'layer'..i)
-		print('done step '..i)
-	end
-	local params, grad = self.start:getParameters()
-	self:testGradParams(batch, params, grad, 'start')
-	print('done iteration')
-end
-
-function RNN:testGradParams(data, params, grad, name)
-	local epsilon = 1e-7
-	local okDiff = 1e-5
-
-	for j = 1,params:size(1) do
-		local tmp = params[j]
-		params[j] = tmp + epsilon
-		local jPlus = self:err(data)
-		params[j] = tmp - epsilon
-		local jMinus = self:err(data)
-		params[j] = tmp
-		local jaccob = (jPlus - jMinus) / (2 * epsilon);
-		local diff = math.abs(grad[j] - jaccob)
-		--assert(diff < okDiff, 'grad error')
-		if(diff > okDiff) then
-			print('grad', name, j, grad[j], grad[j] - jaccob, grad[j]/jaccob)
-		end 
-	end
-end	
-
-function RNN:alpha() 
-	for i = self.max_steps,1,-1 do
-		self.layers[i]:getParameters()
-	end
-	self.start:getParameters()
 end
