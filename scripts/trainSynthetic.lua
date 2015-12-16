@@ -24,11 +24,12 @@ function run()
 		n_hidden = n_hidden,
 		n_questions = data.n_questions,
 		max_grad = 100,
-		max_steps = data.n_questions,
+		maxSteps = data.n_questions,
 		--modelDir = outputRoot .. '/models/result_c5_v0_98'
 	}
 
 	local name = "result_c" .. CONCEPT_NUM .. "_v" .. VERSION
+	lfs.mkdir(paths.dirname(outputRoot))
 	lfs.mkdir(outputRoot)
 	lfs.mkdir(outputRoot .. "models")
 
@@ -72,7 +73,7 @@ function trainMiniBatch(rnn, data, init_rate, decay_rate, mini_batch_size, blob_
 			miniErr = miniErr + err
 			miniTests = miniTests + tests
 			if done % mini_batch_size == 0 then
-				rnn:update(rate)
+				rnn:update(nil, rate)
 				rnn:zeroGrad()
 				print(i/#miniBatches, sumErr/numTests)
 				miniErr = 0
