@@ -29,6 +29,7 @@ function run()
 	}
 
 	local name = "result_c" .. CONCEPT_NUM .. "_v" .. VERSION
+	lfs.mkdir(paths.dirname(outputRoot))
 	lfs.mkdir(outputRoot)
 	lfs.mkdir(outputRoot .. "models")
 
