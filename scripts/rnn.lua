@@ -14,7 +14,7 @@ function RNN:__init(params)
 	self.use_dropout = params['dropout']
 	self.max_grad = params['maxGrad']
 	self.dropoutPred = params['dropoutPred']
-	self.max_steps = params['max_steps']
+	self.max_steps = params['maxSteps']
 
 	self.n_input = self.n_questions * 2
 	self.compressedSensing = params['compressedSensing']
@@ -86,7 +86,7 @@ function RNN:zeroGrad(n_steps)
 	self.layer:zeroGradParameters()
 end
 
-function RNN:update(rate)
+function RNN:update(n_steps, rate)
 	self.start:updateParameters(rate)
 	self.layer:updateParameters(rate)
 end
